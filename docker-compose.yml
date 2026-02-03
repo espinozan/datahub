@@ -1,0 +1,194 @@
+version: '3.8'
+
+services:
+  # ============================================================================
+  # PostgreSQL Database
+  # ============================================================================
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: datahub-postgres
+    environment:
+      POSTGRES_DB: datahub
+      POSTGRES_USER: datahub_user
+      POSTGRES_PASSWORD: datahub_secure_password_2024
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/01_init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U datahub_user -d datahub"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - datahub_network
+
+  # ============================================================================
+  # Redis Cache
+  # ============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: datahub-redis
+    command: redis-server --appendonly yes --requirepass redis_password_2024
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - datahub_network
+
+  # ============================================================================
+  # MinIO Object Storage (S3-compatible)
+  # ============================================================================
+  minio:
+    image: minio/minio:latest
+    container_name: datahub-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: datahub_admin
+      MINIO_ROOT_PASSWORD: minio_secure_password_2024
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - datahub_network
+
+  # ============================================================================
+  # Celery Worker (Background Jobs)
+  # ============================================================================
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: datahub-celery-worker
+    command: celery -A app.infrastructure.tasks.celery_app worker --loglevel=info --concurrency=4
+    environment:
+      DATABASE_URL: postgresql+asyncpg://datahub_user:datahub_secure_password_2024@postgres:5432/datahub
+      REDIS_URL: redis://:redis_password_2024@redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: datahub_admin
+      MINIO_SECRET_KEY: minio_secure_password_2024
+    depends_on:
+      - postgres
+      - redis
+      - minio
+    volumes:
+      - ./app:/app/app
+      - datasets_cache:/tmp/datasets
+    networks:
+      - datahub_network
+
+  # ============================================================================
+  # Celery Beat (Scheduler)
+  # ============================================================================
+  celery_beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: datahub-celery-beat
+    command: celery -A app.infrastructure.tasks.celery_app beat --loglevel=info
+    environment:
+      DATABASE_URL: postgresql+asyncpg://datahub_user:datahub_secure_password_2024@postgres:5432/datahub
+      REDIS_URL: redis://:redis_password_2024@redis:6379/0
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./app:/app/app
+    networks:
+      - datahub_network
+
+  # ============================================================================
+  # FastAPI Application
+  # ============================================================================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: datahub-api
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      DATABASE_URL: postgresql+asyncpg://datahub_user:datahub_secure_password_2024@postgres:5432/datahub
+      REDIS_URL: redis://:redis_password_2024@redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: datahub_admin
+      MINIO_SECRET_KEY: minio_secure_password_2024
+      SECRET_KEY: your_jwt_secret_key_change_in_production
+      ENVIRONMENT: development
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+      - minio
+    volumes:
+      - ./app:/app/app
+      - datasets_cache:/tmp/datasets
+    networks:
+      - datahub_network
+
+  # ============================================================================
+  # Prometheus (Metrics Collection)
+  # ============================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: datahub-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - datahub_network
+
+  # ============================================================================
+  # Grafana (Metrics Visualization)
+  # ============================================================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: datahub-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: grafana_admin_2024
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./config/grafana/datasources:/etc/grafana/provisioning/datasources
+    depends_on:
+      - prometheus
+    networks:
+      - datahub_network
+
+networks:
+  datahub_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  datasets_cache:
+  prometheus_data:
+  grafana_data:
