@@ -69,7 +69,7 @@
 
 ```bash
 # Clonar repositorio
-git clone https://github.com/your-org/datahub.git
+git clone https://github.com/espinozan/datahub.git
 cd datahub
 
 # Crear entorno virtual
