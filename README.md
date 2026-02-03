@@ -169,4 +169,4 @@ Este proyecto está licenciado bajo Apache License 2.0 - ver el archivo [LICENSE
 
 ---
 
-**Desarrollado con ❤️ por el equipo de DataHub Engineering**
+**Desarrollado con ❤️ por el equipo de Ainsophic - DataHub Engineering**
